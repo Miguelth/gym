@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 rewardFunction = RewardFunction()
 
-class HovorkaCambridgeBase(gym.Env):
+class HovorkaDiscrete(gym.Env):
     # TODO: fix metadata??
     metadata = {
         'render.modes': ['human', 'rgb_array'],
@@ -63,8 +63,7 @@ class HovorkaCambridgeBase(gym.Env):
         self.previous_action = 0
 
         # Bolus carb factor -- [g/U]
-        # self.bolus = 30
-        self.bolus = 25
+        self.bolus = 30
 
         ## Loading variable parameters -- used if environment is extended
         reward_flag, bg_init_flag = self._update_parameters()
@@ -96,7 +95,7 @@ class HovorkaCambridgeBase(gym.Env):
         self.init_basal_optimal = init_basal_optimal
 
         # Initializing the action space
-        self.action_space = spaces.Box(0, 2*self.init_basal_optimal, (1,), dtype=np.float32)
+        self.action_space = spaces.Discrete(3)
 
         # Initial basal rate -- used for init and reset. Either randomly initialized or by a fixed value.
 
@@ -230,17 +229,19 @@ class HovorkaCambridgeBase(gym.Env):
         Take action. In the diabetes simulation this means increase, decrease or do nothing
         to the insulin to carb ratio (bolus).
         """
-
-        # if type(action).__module__ != np.__name__:
-        # if not isinstance(action, np.ndarray):
-        # action = np.array([action])
-
-        if action > self.action_space.high:
-            action = self.action_space.high
-        elif action < self.action_space.low:
-            action = self.action_space.low
+        # if action > self.action_space.high:
+        #     action = self.action_space.high
+        # elif action < self.action_space.low:
+        #     action = self.action_space.low
 
         assert self.action_space.contains(action), "%r (%s) invalid"%(action, type(action))
+
+        if action == 0:
+            insulin_given = 0
+        elif action == 1:
+            insulin_given = self.init_basal_optimal
+        elif action == 2:
+            insulin_given = 5 * self.init_basal_optimal
 
         self.integrator.set_initial_value(self.simulation_state, self.num_iters)
 
@@ -260,11 +261,10 @@ class HovorkaCambridgeBase(gym.Env):
                     self.insulinOnBoard = self.insulinOnBoard + self.bolusHistoryValue[b] * self.scalableExpIOB(self.num_iters - self.bolusHistoryTime[b], 75, 300)
 
             # If there is a meal, give a bolus
-            # print("numero iter", self.num_iters)
             if self.meal_indicator[self.num_iters] > 0:
-                insulin_rate = action + np.round(max(self.meal_indicator[self.num_iters] * (180 / self.bolus), 0), 1)
+                insulin_rate = insulin_given + np.round(max(self.meal_indicator[self.num_iters] * (180 / self.bolus), 0), 1)
             else:
-                insulin_rate = action
+                insulin_rate = insulin_given
 
             bolus_given =  bolus_given + self.meal_indicator[self.num_iters] * (180 / self.bolus)
 
@@ -321,7 +321,7 @@ class HovorkaCambridgeBase(gym.Env):
 
         # Recording bg history for plotting and insulin for the state space
         self.bg_history = np.concatenate([self.bg_history, bg])
-        self.insulin_history = np.concatenate([self.insulin_history, action])
+        self.insulin_history = np.concatenate([self.insulin_history, np.array([insulin_rate])])
 
         # Miguel: What is this?
         # self.insulinOnBoard = np.zeros(1)
@@ -348,15 +348,20 @@ class HovorkaCambridgeBase(gym.Env):
         # ====================================================================================
 
         if not done:
-            reward = rewardFunction.calculate_reward(np.array(bg), self.reward_flag, 108, action, self.init_basal_optimal)
+            if self.reward_flag != 'gaussian_with_insulin':
+                reward = rewardFunction.calculate_reward(np.array(bg), self.reward_flag, 108)
+            else:
+                reward = rewardFunction.calculate_reward(np.array(bg), 'gaussian_with_insulin', 108, insulin_given)
 
         elif self.steps_beyond_done is None:
             # Blood glucose below zero -- simulation out of bounds
             self.steps_beyond_done = 0
             # reward = 0.0
             # reward = -1000
-            reward = rewardFunction.calculate_reward(np.array(bg), self.reward_flag, 108, action, self.init_basal_optimal)
-            
+            if self.reward_flag != 'gaussian_with_insulin':
+                reward = rewardFunction.calculate_reward(np.array(bg), self.reward_flag, 108)
+            else:
+                reward = rewardFunction.calculate_reward(np.array(bg), 'gaussian_with_insulin', 108, insulin_given)
         else:
             if self.steps_beyond_done == 0:
                 logger.warning("You are calling 'step()' even though this environment has already returned done = True. You should always call 'reset()' once you receive 'done = True' -- any further steps are undefined behavior.")
@@ -364,7 +369,7 @@ class HovorkaCambridgeBase(gym.Env):
             reward = -1000
 
         # Miguel: que pasa?
-        self.previous_action = action
+        self.previous_action = insulin_given
 
         return np.array(self.state), np.mean(reward), done, {}
 
@@ -448,7 +453,7 @@ class HovorkaCambridgeBase(gym.Env):
 
             return None
         else:
-            super(HovorkaCambridgeBase, self).render(mode=mode) # just raise an exception
+            super(HovorkaDiscrete, self).render(mode=mode) # just raise an exception
 
             plt.ion()
             plt.plot(self.bg_history)
